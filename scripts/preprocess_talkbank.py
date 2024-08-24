@@ -26,18 +26,20 @@ warnings.filterwarnings('ignore')
 def parse_args():
     """Parse command-line arguments with nested structure."""
     parser = argparse.ArgumentParser(description="Process TalkBank corpus data.")
-    parser.add_argument("--preprocess", action="store_true", help="Perform pre-processing")
     
     subparsers = parser.add_subparsers(dest="component", required=True, help="The component of TalkBank")
     
+    # Common parser for shared arguments
+    parent_parser = argparse.ArgumentParser(add_help=False)
+    parent_parser.add_argument("--preprocess", action="store_true", help="Perform pre-processing")
+    parent_parser.add_argument("--indicator", required=True, help="Speaker indicator (follow CLAN annotation)")
+    
     # Pitt component parser
-    pitt_parser = subparsers.add_parser("pitt", help="Process Pitt corpus")
+    pitt_parser = subparsers.add_parser("pitt", help="Process Pitt corpus", parents=[parent_parser])
     pitt_parser.add_argument("--subset", required=True, help="The subset of Pitt corpus")
-    pitt_parser.add_argument("--indicator", required=True, help="Speaker indicator (follow CLAN annotation)")
     
     # WLS component parser
-    wls_parser = subparsers.add_parser("wls", help="Process WLS corpus")
-    wls_parser.add_argument("--indicator", required=True, help="Speaker indicator (follow CLAN annotation)")
+    wls_parser = subparsers.add_parser("wls", help="Process WLS corpus", parents=[parent_parser])
     
     return parser.parse_args()
 
@@ -54,32 +56,217 @@ def load_word_dist():
         return pickle.load(f)
 
 
-def get_par_trans(sample, preprocess_rules, require_audio=True):
+def get_par_trans(input_sample, preprocess_rules, require_audio=True):
     """Perform text and audio pre-processing."""
-    if not os.path.exists(sample['text_output_path']):
-        subset_info = f", {sample['subset']}" if sample['subset'] else ''
-        print(f"Text preprocessing for {sample['component']}{subset_info} on {sample['indicator'][1:]} transcripts")
-        TextWrapperProcessor(data_loc=sample, txt_patterns=preprocess_rules).process()
+    if not os.path.exists(input_sample['text_output_path']):
+        subset_info = f", {input_sample['subset']}" if input_sample['subset'] else ''
+        print(f"Text preprocessing for {input_sample['component']}{subset_info} on {input_sample['indicator'][1:]} transcripts")
+        wrapper_processor = TextWrapperProcessor(
+            data_loc=input_sample, txt_patterns=preprocess_rules)
+        wrapper_processor.process()
     
-    if require_audio and not os.path.exists(sample['audio_output_path']):
-        AudioProcessor(data_loc=sample, sample_rate=16000).process_audio()
+    if require_audio and not os.path.exists(input_sample['audio_output_path']):
+        processor = AudioProcessor(data_loc=input_sample, sample_rate=16000)
+        processor.process_audio()
 
 def process_transcript(tran):
     """Process a single transcript file."""
-    pid = os.path.basename(tran).split(".")[0]
     with open(tran, "r") as json_file:
         turns = sum(1 for _ in json_file)
-    return {"pid": pid, "inv_turns": turns}
+    return turns
 
-def get_turns(subset, config):
-    """Get the number of INV turns for the Pitt corpus subset."""
-    all_trans = glob(os.path.join(f"{config['DATA']['pitt_output']}{subset}/INV/txt/*.jsonl"))
+
+def get_turns(input_sample):
+    """Get the number of PAR and INV turns from the component."""
+    par_path = input_sample["text_output_path"]
+    inv_path = par_path.replace("PAR", "INV")
+    all_par_trans = glob(f"{par_path}/*.jsonl")
+    all_inv_trans = glob(f"{inv_path}/*.jsonl")
+
+    # Create a dictionary to store both PAR and INV turns for each PID
+    turn_dict = {}
     
-    turn_list = []
-    for tran in tqdm(all_trans, desc=f"Processing {subset} transcripts for INV turns"):
-        turn_list.append(process_transcript(tran))
+    # Process PAR turns
+    for tran in tqdm(
+        all_par_trans, desc=f"Processing {input_sample['component']} PAR transcripts"):
+        pid = os.path.basename(tran).split(".")[0]
+        if input_sample['component'] == "wls":
+            pid = f"20000{pid}"
+        par_turns = process_transcript(tran)
+        turn_dict[pid] = {"pid": pid, "par_turns": par_turns, "inv_turns": 0}
     
+    # Process INV turns
+    for tran in tqdm(
+        all_inv_trans, desc=f"Processing {input_sample['component']} INV transcripts"):
+        pid = os.path.basename(tran).split(".")[0]
+        if input_sample['component'] == "wls":
+            pid = f"20000{pid}"
+        inv_turns = process_transcript(tran)
+        if pid in turn_dict:
+            turn_dict[pid]["inv_turns"] = inv_turns
+        else:
+            turn_dict[pid] = {"pid": pid, "par_turns": 0, "inv_turns": inv_turns}
+    
+    # Convert the dictionary to a list of dictionaries
+    turn_list = list(turn_dict.values())
     return pd.DataFrame(turn_list)
+
+
+def get_info(input_sample, spacy_processor):
+    """Get participants' average POS tags, log lexical, and TTR for talkbank component"""
+    stop_words = set(stopwords.words("english"))
+    word_dist = load_word_dist()
+    all_trans = glob(f"{input_sample['text_output_path']}/*.jsonl")
+
+    pos_list = []
+    for tran in tqdm(
+        all_trans,
+        desc=f"Processing {input_sample['component']} transcripts for POS tags"):
+        pid = os.path.basename(tran).split(".")[0]
+        if input_sample['component'] == "wls":
+            pid = f"20000{pid}"
+        pos_counts = {"pid": pid}
+        with open(tran, "r") as json_file:
+            text = " ".join(json.loads(jline)['text'] for jline in json_file)
+            text = re.sub(r"\s+", " ", text)
+        if text:
+            # POS tags
+            doc = spacy_processor(text)
+            for token in doc:
+                pos_counts[token.pos_] = pos_counts.get(token.pos_, 0) + 1
+            # clause
+            clause_count = 0
+            for sent in doc.sents:
+                # Count root verbs (main clauses)
+                clause_count += len([token for token in sent if token.dep_ == "ROOT"])
+                
+                # Count subordinate clauses
+                clause_count += len([token for token in sent if token.dep_ in ["ccomp", "xcomp", "advcl"]])
+            total_words = word_tokenize(text)
+            total_words = [word for word in total_words 
+                        if word not in string.punctuation]
+            words = set(word for word in word_tokenize(text) 
+                        if word not in string.punctuation and word not in stop_words)
+            # type-to-token ratio
+            ttr = round(len(words)/len(total_words), 2)
+            # log lexical frequency
+            log_lf = [np.log(word_dist.get(word, 1)) for word in words]
+            log_lf = [lf for lf in log_lf if lf != -np.inf and lf != 0.0]
+            avg_lf = round(sum(log_lf) / len(log_lf), 2) if log_lf else 0
+            pos_counts['LF'] = avg_lf
+            pos_counts['TTR'] = ttr
+            pos_counts['CLAUSE'] = clause_count
+            pos_list.append(pos_counts)
+        else:
+            pass
+
+    pos_df = pd.DataFrame(pos_list)
+    pos_df.drop(["X", "NUM"], axis=1, errors='ignore', inplace=True)
+    pos_df.fillna(0, inplace=True)
+    return pos_df
+
+
+def load_or_process_data(input_sample):
+    """
+    Load previously processed data or process new data for POS and turns.
+
+    Args:
+        input_sample (dic): The input meta data.
+        subset (str): The subset of the Pitt corpus.
+
+    Returns:
+        pandas.DataFrame: The processed subset data.
+    """
+    nlp = spacy.load('en_core_web_trf')
+    pos_df = get_info(input_sample, nlp)
+    turn_df = get_turns(input_sample)
+    df = pd.merge(pos_df, turn_df, on="pid")
+    
+    return df
+
+
+def get_meta_from_header(subset):
+    """
+    Extract metadata from CHAT file headers.
+
+    Args:
+        subset (str): The subset of the corpus to process.
+
+    Returns:
+        pandas.DataFrame: Dataframe containing extracted metadata.
+    """
+    all_trans = glob(os.path.join(f"{config['DATA']['pitt_input']}{subset}/txt/", "*.cha"))
+    meta_keys = ["age", "gender", "dx", "mmse"]
+    
+    meta_list = []
+    for tran in tqdm(all_trans, desc=f"Processing {subset} transcripts for metadata"):
+        pid = os.path.basename(tran).split(".")[0]
+        with open(tran, "r") as cha_file:
+            meta_header = next(line.strip() for line in cha_file if line.startswith('@ID:\teng|Pitt|PAR|'))
+        
+        meta_header = meta_header.split("|")[3:]
+        meta_header.remove("Participant")
+        meta_header[0] = int(meta_header[0].split(";")[0])
+        
+        meta_dict = dict(zip(meta_keys, meta_header))
+        meta_dict['pid'] = pid
+        meta_list.append(meta_dict)
+    
+    return pd.DataFrame(meta_list)
+
+def merge_with_meta(input_sample, meta_data_path):
+    if input_sample['component'] == "pitt":
+        # get mmse score for each transcript
+        meta_df = pd.read_csv(meta_data_path)
+        meta_df = meta_df[["id", "educ", "mms", "mmse2", "mmse3", "mmse4", "mmse5", "mmse6", "mmse7", "lastmms"]]
+        meta_df.rename(columns={"id": "pid", "mms": "mmse1"}, inplace=True)
+        meta_df['pid'] = meta_df['pid'].astype(str).str.zfill(3)
+        melted_df = pd.melt(meta_df, id_vars=['pid', 'educ'],
+                        value_vars=[f'mmse{i}' for i in range(1, 8)],
+                        var_name='mmse_num', value_name='mmse')
+        melted_df = melted_df.dropna(subset=['mmse'])
+        melted_df['mmse_num'] = melted_df['mmse_num'].str.extract('(\d+)').astype(int) - 1
+        melted_df['pid'] = melted_df['pid'] + '-' + melted_df['mmse_num'].astype(str)
+        melted_df.drop(columns=['mmse_num'], axis=1, inplace=True)
+        mmse_df = melted_df[['pid', "educ", "mmse"]].reset_index(drop=True)
+        # get subset metadata from header
+        dem_df = get_meta_from_header("dementia")
+        con_df = get_meta_from_header("control")
+        full_df = pd.concat([con_df, dem_df])
+        full_df.drop(columns=['mmse'], axis=1, inplace=True)
+        full_df = full_df.merge(mmse_df, on=['pid'])
+        return full_df
+    elif input_sample['component'] == "wls":
+        meta_df = pd.read_csv(meta_data_path)
+        # get diagnosis via positive predictive value summary
+        meta_df = meta_df.loc[meta_df['Positive predictive value summary outcome'].isin([1,2,3,6,8])]
+        # remove participants who did not complete long interview
+        meta_df = meta_df.loc[meta_df['Level of cognitive impairment via Consensus']!= -2]
+        meta_df.rename(columns={'idtlkbnk': 'pid',
+                                'sex': 'gender',
+                                'Positive predictive value summary outcome': 'dx',
+                                'age 2020': 'age'},
+                        inplace=True)
+        meta_df['gender'] = np.where(
+            meta_df['gender'] == 1, 'male', 'female'
+        )
+        # update dignosis code
+        meta_df['dx'] = np.where(
+            meta_df['dx'].isin([1,2,3]), 0, 1
+        )
+        meta_df = meta_df[['pid', 'age', 'gender','dx']]
+        meta_df = meta_df.loc[meta_df['age']!= -2]
+        return meta_df
+    else:
+        raise ValueError("Currently it supports pitt and wls only. More to come.")
+
+
+def process_and_save_data(file_path, process_func, *args):
+    """Process data if file doesn't exist, otherwise skip."""
+    if not os.path.exists(file_path):
+        df = process_func(*args)
+        df.to_csv(file_path, index=False)
+    return pd.read_csv(file_path)
 
 
 if __name__ == "__main__":
@@ -121,12 +308,42 @@ if __name__ == "__main__":
         "component": pargs.component,
         "subset": getattr(pargs, 'subset', None),
         "indicator": pargs.indicator,
-        "text_input_path": os.path.join(config['DATA'][f'{pargs.component}_input'], getattr(pargs, 'subset', '') or '', "txt"),
-        "audio_input_path": os.path.join(config['DATA'][f'{pargs.component}_input'], getattr(pargs, 'subset', '') or '', "audio"),
-        "text_output_path": os.path.join(config['DATA'][f'{pargs.component}_output'], getattr(pargs, 'subset', '') or '', pargs.indicator[1:], "txt"),
-        "audio_output_path": os.path.join(config['DATA'][f'{pargs.component}_output'], getattr(pargs, 'subset', '') or '', pargs.indicator[1:], "audio"),
+        "text_input_path": os.path.join(
+            config['DATA'][f'{pargs.component}_input'], getattr(pargs, 'subset', '') or '', "txt"),
+        "audio_input_path": os.path.join(
+            config['DATA'][f'{pargs.component}_input'], getattr(pargs, 'subset', '') or '', "audio"),
+        "text_output_path": os.path.join(
+            config['DATA'][f'{pargs.component}_output'], getattr(pargs, 'subset', '') or '', pargs.indicator[1:], "txt"),
+        "audio_output_path": os.path.join(
+            config['DATA'][f'{pargs.component}_output'], getattr(pargs, 'subset', '') or '', pargs.indicator[1:], "audio"),
         "audio_type": ".mp3",
         "speaker": pargs.indicator,
         "content": r'@G:	Cookie\n(.*?)@End' if pargs.component == "pitt" else r'@Bg:	Activity\n.*?@Eg:	Activity'
     }
-    print(sample)
+    if pargs.preprocess:
+        get_par_trans(
+            sample, cha_txt_patterns, require_audio=(pargs.indicator == "*PAR"))
+    subset_suffix = f"_{subset}" if subset else ""
+    meta_prefix = config['META']['prefix']
+    # get turns data
+    turn_file = os.path.join(meta_prefix, f"{sample['component']}{subset_suffix}_turns.csv")
+    turn_df = process_and_save_data(
+        turn_file, load_or_process_data, sample)
+    # get meta data
+    meta_file = os.path.join(meta_prefix, f"{sample['component']}.csv")
+    meta_df = process_and_save_data(
+        meta_file, merge_with_meta, sample, config['META'][f"{sample['component']}_meta"])
+    # merge for further analysis
+    full_file = os.path.join(meta_prefix, f"{sample['component']}_total.csv")
+    if sample['component'] == 'pitt':
+        con_file = os.path.join(meta_prefix, f"{sample['component']}_control_turns.csv")
+        dem_file = os.path.join(meta_prefix, f"{sample['component']}_dementia_turns.csv")
+        
+        con_df = pd.read_csv(con_file)
+        dem_df = pd.read_csv(dem_file)
+        
+        full_df = pd.concat([con_df, dem_df]).merge(meta_df, on=['pid'])
+    else:
+        full_df = turn_df.merge(meta_df, on=['pid'])
+    full_df = full_df.sample(frac=1)
+    full_df.to_csv(full_file, index=False)
