@@ -27,10 +27,11 @@ The structure of this repo is listed as follows
 ├── data
 │   ├── component_1_preprocessed_data.csv
 │   ├── component_2_preprocessed_data.csv
+│   ├── other_data.csv
 ├── scripts
 │   ├── preprocess_talkbank.py
 │   ├── match.R
-│   ├── turn.Rmd
+│   ├── inv_analysis.py
 ```
 
 ## To reproduce
@@ -47,4 +48,4 @@ Similarly, to get the WLS corpus preprocessing result on participants, one can r
 python preprocess_talkbank.py wls --indicator *PAR --preprocess
 ```
 
-For the detailed analysis, please refer to `turn.Rmd` and `match.R` for details.
+For the detailed analysis, please refer to `match.R` for details.

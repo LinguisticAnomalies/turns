@@ -177,8 +177,10 @@ if __name__ == "__main__":
     if not os.path.exists("../data/pitt_inv.tsv") or not os.path.exists("../data/wls_inv.tsv"):
         inv_pitt = load_inv_pitt(config_parser)
         inv_pitt = inv_pitt[~((inv_pitt['text'] == ".") | (inv_pitt['pid'] == "") | (inv_pitt['text'].isna()))]
+        inv_pitt.to_csv("../data/pitt_inv_sep.csv", index=False)
         inv_wls = load_inv_wls(config_parser)
         inv_wls = inv_wls[~((inv_pitt['text'] == ".") | (inv_wls['pid'] == "") | (inv_wls['text'].isna()))]
+        inv_wls.to_csv("../data/wls_inv_sep.csv", index=False)
         inv_pitt = inv_pitt.groupby(['pid', 'dx'])['text'].agg(result=lambda x: "".join(x)).reset_index()
         inv_wls = inv_wls.groupby(['pid', 'dx'])['text'].agg(result=lambda x: "".join(x)).reset_index()
         inv_pitt.to_csv("../data/pitt_inv.tsv", sep="\t", index=False)

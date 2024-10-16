@@ -58,12 +58,12 @@ def load_word_dist():
 
 def get_par_trans(input_sample, preprocess_rules, require_audio=True):
     """Perform text and audio pre-processing."""
-    if not os.path.exists(input_sample['text_output_path']):
-        subset_info = f", {input_sample['subset']}" if input_sample['subset'] else ''
-        print(f"Text preprocessing for {input_sample['component']}{subset_info} on {input_sample['indicator'][1:]} transcripts")
-        wrapper_processor = TextWrapperProcessor(
-            data_loc=input_sample, txt_patterns=preprocess_rules)
-        wrapper_processor.process()
+    #if not os.path.exists(input_sample['text_output_path']):
+    subset_info = f", {input_sample['subset']}" if input_sample['subset'] else ''
+    print(f"Text preprocessing for {input_sample['component']}{subset_info} on {input_sample['indicator'][1:]} transcripts")
+    wrapper_processor = TextWrapperProcessor(
+        data_loc=input_sample, txt_patterns=preprocess_rules)
+    wrapper_processor.process()
     
     if require_audio and not os.path.exists(input_sample['audio_output_path']):
         processor = AudioProcessor(data_loc=input_sample, sample_rate=16000)
@@ -181,6 +181,7 @@ def load_or_process_data(input_sample):
     pos_df = get_info(input_sample, nlp)
     turn_df = get_turns(input_sample)
     df = pd.merge(pos_df, turn_df, on="pid")
+    df['pid'] = df['pid'].astype(int)
     
     return df
 
@@ -214,59 +215,58 @@ def get_meta_from_header(subset):
     
     return pd.DataFrame(meta_list)
 
-def merge_with_meta(input_sample, meta_data_path):
-    if input_sample['component'] == "pitt":
-        # get mmse score for each transcript
-        meta_df = pd.read_csv(meta_data_path)
-        meta_df = meta_df[["id", "educ", "mms", "mmse2", "mmse3", "mmse4", "mmse5", "mmse6", "mmse7", "lastmms"]]
-        meta_df.rename(columns={"id": "pid", "mms": "mmse1"}, inplace=True)
-        meta_df['pid'] = meta_df['pid'].astype(str).str.zfill(3)
-        melted_df = pd.melt(meta_df, id_vars=['pid', 'educ'],
-                        value_vars=[f'mmse{i}' for i in range(1, 8)],
-                        var_name='mmse_num', value_name='mmse')
-        melted_df = melted_df.dropna(subset=['mmse'])
-        melted_df['mmse_num'] = melted_df['mmse_num'].str.extract('(\d+)').astype(int) - 1
-        melted_df['pid'] = melted_df['pid'] + '-' + melted_df['mmse_num'].astype(str)
-        melted_df.drop(columns=['mmse_num'], axis=1, inplace=True)
-        mmse_df = melted_df[['pid', "educ", "mmse"]].reset_index(drop=True)
-        # get subset metadata from header
-        dem_df = get_meta_from_header("dementia")
-        con_df = get_meta_from_header("control")
-        full_df = pd.concat([con_df, dem_df])
-        full_df.drop(columns=['mmse'], axis=1, inplace=True)
-        full_df = full_df.merge(mmse_df, on=['pid'])
-        return full_df
-    elif input_sample['component'] == "wls":
-        meta_df = pd.read_csv(meta_data_path)
-        # get diagnosis via positive predictive value summary
-        meta_df = meta_df.loc[meta_df['Positive predictive value summary outcome'].isin([1,2,3,6,8])]
-        # remove participants who did not complete long interview
-        meta_df = meta_df.loc[meta_df['Level of cognitive impairment via Consensus']!= -2]
-        meta_df.rename(columns={'idtlkbnk': 'pid',
-                                'sex': 'gender',
-                                'Positive predictive value summary outcome': 'dx',
-                                'age 2020': 'age'},
-                        inplace=True)
-        meta_df['gender'] = np.where(
-            meta_df['gender'] == 1, 'male', 'female'
-        )
-        # update dignosis code
-        meta_df['dx'] = np.where(
-            meta_df['dx'].isin([1,2,3]), 0, 1
-        )
-        meta_df = meta_df[['pid', 'age', 'gender','dx']]
-        meta_df = meta_df.loc[meta_df['age']!= -2]
-        return meta_df
-    else:
-        raise ValueError("Currently it supports pitt and wls only. More to come.")
+def merge_with_meta_pitt(meta_data_path):
+    # get mmse score for each transcript
+    meta_df = pd.read_csv(meta_data_path)
+    meta_df = meta_df[["id", "educ", "mms", "mmse2", "mmse3", "mmse4", "mmse5", "mmse6", "mmse7", "lastmms"]]
+    meta_df.rename(columns={"id": "pid", "mms": "mmse1"}, inplace=True)
+    meta_df['pid'] = meta_df['pid'].astype(str).str.zfill(3)
+    melted_df = pd.melt(meta_df, id_vars=['pid', 'educ'],
+                    value_vars=[f'mmse{i}' for i in range(1, 8)],
+                    var_name='mmse_num', value_name='mmse')
+    melted_df = melted_df.dropna(subset=['mmse'])
+    melted_df['mmse_num'] = melted_df['mmse_num'].str.extract('(\d+)').astype(int) - 1
+    melted_df['pid'] = melted_df['pid'] + '-' + melted_df['mmse_num'].astype(str)
+    melted_df.drop(columns=['mmse_num'], axis=1, inplace=True)
+    mmse_df = melted_df[['pid', "educ", "mmse"]].reset_index(drop=True)
+    # get subset metadata from header
+    dem_df = get_meta_from_header("dementia")
+    con_df = get_meta_from_header("control")
+    full_df = pd.concat([con_df, dem_df])
+    full_df.drop(columns=['mmse'], axis=1, inplace=True)
+    full_df = full_df.merge(mmse_df, on=['pid'])
+    return full_df
 
-
-def process_and_save_data(file_path, process_func, *args):
-    """Process data if file doesn't exist, otherwise skip."""
-    if not os.path.exists(file_path):
-        df = process_func(*args)
-        df.to_csv(file_path, index=False)
-    return pd.read_csv(file_path)
+def merge_with_meta_wls(meta_data_path):
+    meta_df = pd.read_csv(meta_data_path)
+    # TICSm score for dementia cutoff
+    meta_df = meta_df.dropna(subset=['TICSm score'])
+    # get diagnosis via positive predictive value summary
+    # meta_df = meta_df.loc[meta_df['Positive predictive value summary outcome'].isin([1,2,3,6,8])]
+    # remove participants who did not complete long interview
+    # meta_df = meta_df.loc[meta_df['Level of cognitive impairment via Consensus']!= -2]
+    meta_df.rename(columns={'idtlkbnk': 'pid',
+                            'sex': 'gender',
+                            'age 2020': 'age',
+                            'TICSm score': 'score'},
+                    inplace=True)
+    meta_df = meta_df.loc[(meta_df['score'] <= 27 )| (meta_df['score'] > 31)]
+    meta_df['dx'] = np.where(meta_df['score'] <= 27, 1, 0)
+    meta_df['gender'] = np.where(
+        meta_df['gender'] == 1, 'male', 'female'
+    )
+    meta_df = meta_df[['pid', 'age', 'gender','dx', 'score']]
+    meta_df = meta_df.loc[meta_df['age']!= -2]
+    # add education
+    educ_file = meta_data_path.replace("diagnosis", 'educ')
+    educ_df = pd.read_csv(educ_file)
+    educ_df.rename(
+        columns={'idtlkbnk': 'pid',
+                    'education': 'educ',},
+        inplace=True)
+    meta_df['pid'] = meta_df['pid'].astype(int)
+    meta_df = meta_df.merge(educ_df, on=['pid'])
+    return meta_df
 
 
 if __name__ == "__main__":
@@ -318,32 +318,36 @@ if __name__ == "__main__":
             config['DATA'][f'{pargs.component}_output'], getattr(pargs, 'subset', '') or '', pargs.indicator[1:], "audio"),
         "audio_type": ".mp3",
         "speaker": pargs.indicator,
-        "content": r'@G:	Cookie\n(.*?)@End' if pargs.component == "pitt" else r'@Bg:	Activity\n.*?@Eg:	Activity'
+        "content": r'@G:	Cookie\n(.*?)@End' if pargs.component == "pitt" else r'@Bg:	Activity\n.*?@Eg:	Activity',
     }
     if pargs.preprocess:
+        # if os.path.exists(config['DATA'][f"{sample['component']}_output"]):
+        #     shutil.rmtree(config['DATA'][f"{sample['component']}_output"])
         get_par_trans(
-            sample, cha_txt_patterns, require_audio=(pargs.indicator == "*PAR"))
-    subset_suffix = f"_{subset}" if subset else ""
-    meta_prefix = config['META']['prefix']
-    # get turns data
-    turn_file = os.path.join(meta_prefix, f"{sample['component']}{subset_suffix}_turns.csv")
-    turn_df = process_and_save_data(
-        turn_file, load_or_process_data, sample)
-    # get meta data
-    meta_file = os.path.join(meta_prefix, f"{sample['component']}.csv")
-    meta_df = process_and_save_data(
-        meta_file, merge_with_meta, sample, config['META'][f"{sample['component']}_meta"])
-    # merge for further analysis
-    full_file = os.path.join(meta_prefix, f"{sample['component']}_total.csv")
-    if sample['component'] == 'pitt':
-        con_file = os.path.join(meta_prefix, f"{sample['component']}_control_turns.csv")
-        dem_file = os.path.join(meta_prefix, f"{sample['component']}_dementia_turns.csv")
-        
-        con_df = pd.read_csv(con_file)
-        dem_df = pd.read_csv(dem_file)
-        
-        full_df = pd.concat([con_df, dem_df]).merge(meta_df, on=['pid'])
+            sample, cha_txt_patterns, require_audio=False)
     else:
-        full_df = turn_df.merge(meta_df, on=['pid'])
-    full_df = full_df.sample(frac=1)
-    full_df.to_csv(full_file, index=False)
+        subset_suffix = f"_{subset}" if subset else ""
+        meta_prefix = config['META']['prefix']
+        # get meta data
+        meta_file = os.path.join(meta_prefix, f"{sample['component']}.csv")
+        if sample['component'] == "pitt":
+            meta_df = merge_with_meta_pitt(config['META'][f"{sample['component']}_meta"])
+        else:
+            meta_df = merge_with_meta_wls(config['META'][f"{sample['component']}_meta"])
+        # get turns data
+        turn_file = os.path.join(meta_prefix, f"{sample['component']}{subset_suffix}_turns.csv")
+        turn_df = load_or_process_data(sample)
+        # merge for further analysis
+        full_file = os.path.join(meta_prefix, f"{sample['component']}_total.csv")
+        if sample['component'] == 'pitt':
+            con_file = os.path.join(meta_prefix, f"{sample['component']}_control_turns.csv")
+            dem_file = os.path.join(meta_prefix, f"{sample['component']}_dementia_turns.csv")
+            
+            con_df = pd.read_csv(con_file)
+            dem_df = pd.read_csv(dem_file)
+            
+            full_df = pd.concat([con_df, dem_df]).merge(meta_df, on=['pid'])
+        else:
+            full_df = turn_df.merge(meta_df, on=['pid'])
+        full_df = full_df.sample(frac=1)
+        full_df.to_csv(full_file, index=False)

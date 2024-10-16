@@ -118,7 +118,6 @@ full_df <- read.csv("pitt_total.csv")
 filtered_pitt <- full_df[which(full_df$dx %in%  c("Control", "ProbableAD")), ]
 filtered_pitt$dx <- ifelse(
     filtered_pitt$dx == "ProbableAD", 1, 0)
-filtered_pitt[covariates] <- scale(filtered_pitt[covariates])
 col_names <- colnames(filtered_pitt)
 factorVals <- c("gender", "dx")
 vars <- col_names[-1]
@@ -138,6 +137,7 @@ p <- print(
     showAllLevels = TRUE)
 k <- kable(p, format = "latex", booktabs=TRUE,
            caption = "Covariables before Matching, Pitt corpus")
+k
 #---------- Pitt matching -------------
 mod_ps1 <- matchit(
     dx ~ inv_turns + educ,
@@ -177,7 +177,6 @@ write.csv(
 wls <- read.csv("wls_total.csv")
 # revert to 2011 age
 wls$age <-wls$age - (2020 - 2011)
-wls[covariates] <- scale(wls[covariates])
 wls_vars <- colnames(wls)[-1]
 tab2 <- CreateTableOne(
     data = wls, factorVars = factorVals, 
@@ -261,101 +260,22 @@ wilcox.test(
 
 wilcox.test(filtered_pitt$educ, wls$educ, alternative = "less")
 cor(filtered_pitt$inv_turns, filtered_pitt$mmse, method = "spearman")
-
+cor(wls$inv_turns, wls$score, method = "spearman")
+filtered_pitt[covariates] <- scale(filtered_pitt[covariates])
+wls[covariates] <- scale(wls[covariates])
 # -------------- GLM on original Pitt ---------------
 sample <- sample(
     c(TRUE, FALSE), nrow(filtered_pitt),
     replace=TRUE, prob=c(0.7,0.3))
 filtered_pitt_train <- filtered_pitt[sample,]
 filtered_pitt_test <- filtered_pitt[!sample,]
-m1 <- glm(dx ~ inv_turns * (LF + TTR) + PRON + AUX + ADP + DET + NOUN +
-              CCONJ + ADJ + ADV + PART + SCONJ + PROPN + VERB  + 
-              CLAUSE,
-          data = filtered_pitt_train,
-          family = binomial(link = "logit"))
-summary(m1)
-
-metrics <- get_metrics(m1, filtered_pitt_test)
-cat(paste(
-    "pitt model on pitt test:",
-    "\nAccuracy:", metrics$accuracy,
-    "\nPrecision:", metrics$precision,
-    "\nRecall:", metrics$recall,
-    "\nF1 Score:", metrics$f1_score
-))
-
-metrics <- get_metrics(m1, wls)
-cat(paste(
-    "pitt model on wls:",
-    "\nAccuracy:", metrics$accuracy,
-    "\nPrecision:", metrics$precision,
-    "\nRecall:", metrics$recall,
-    "\nF1 Score:", metrics$f1_score
-))
-# -------------- GLM on matched Pitt ---------------
+matched_pitt1[covariates] <- scale(matched_pitt1[covariates])
 sample <- sample(
     c(TRUE, FALSE), nrow(matched_pitt1),
     replace=TRUE, prob=c(0.7,0.3))
 matched_pitt_train <- matched_pitt1[sample,]
 matched_pitt_test <- matched_pitt1[!sample,]
-m2 <- glm(dx ~ inv_turns * (LF + TTR) + PRON + AUX + ADP + DET + NOUN +
-              CCONJ + ADJ + ADV + PART + SCONJ + PROPN + VERB  + 
-              CLAUSE,
-          data = matched_pitt_train,
-          family = binomial(link = "logit"))
-summary(m2)
-
-metrics <- get_metrics(m2, matched_pitt_test)
-cat(paste(
-    "matched pitt model on matched pitt test:",
-    "\nAccuracy:", metrics$accuracy,
-    "\nPrecision:", metrics$precision,
-    "\nRecall:", metrics$recall,
-    "\nF1 Score:", metrics$f1_score
-))
-
-metrics <- get_metrics(m2, wls)
-cat(paste(
-    "matched pitt model on wls:",
-    "\nAccuracy:", metrics$accuracy,
-    "\nPrecision:", metrics$precision,
-    "\nRecall:", metrics$recall,
-    "\nF1 Score:", metrics$f1_score
-))
-# ---------- GLM on WLS, no classification -----------
-m3 <- glm(
-    dx ~ inv_turns * (LF + TTR) + PRON + AUX + ADP + DET + NOUN + 
-        CCONJ + ADJ + ADV + PART + SCONJ + PROPN + VERB + 
-        CLAUSE,
-    data = wls,
-    family = binomial(link = "logit"))
-summary(m3)
-# --------- GLM on matched WLS -----------
-m4 <- glm(
-    dx ~ inv_turns * (LF + TTR) + PRON + AUX + ADP + DET + NOUN +
-        CCONJ + ADJ + ADV + PART + SCONJ + PROPN + VERB  + 
-        CLAUSE,
-    data = matched_wls,
-    family = binomial(link = "logit"))
-summary(m4)
-
-metrics <- get_metrics(m4, filtered_pitt_test)
-cat(paste(
-    "matched wls model on pitt test:",
-    "\nAccuracy:", metrics$accuracy,
-    "\nPrecision:", metrics$precision,
-    "\nRecall:", metrics$recall,
-    "\nF1 Score:", metrics$f1_score
-))
-metrics <- get_metrics(m4, matched_pitt_test)
-cat(paste(
-    "matched wls model on matched pitt test:",
-    "\nAccuracy:", metrics$accuracy,
-    "\nPrecision:", metrics$precision,
-    "\nRecall:", metrics$recall,
-    "\nF1 Score:", metrics$f1_score
-))
-
+matched_wls[covariates] <- scale(matched_wls[covariates])
 # -------- mixed effect GLM on Pitt -------------
 pitt_model <- glmer(
     dx ~ inv_turns * (LF + TTR + PRON + AUX + ADP + DET + NOUN +
@@ -381,8 +301,33 @@ final_pitt_model <- backward_selection(pitt_model)
 final_matched_pitt <- backward_selection(matched_pitt_model)
 summary(final_pitt_model)
 summary(final_matched_pitt)
-texreg(final_pitt_model)
 
+# ----------- visualization of interaction terms ----------
+inv_turns_range <- range(matched_pitt_test$inv_turns)
+PRON_range <- range(matched_pitt_test$PRON)
+plot_data <- expand.grid(
+    inv_turns = seq(inv_turns_range[1], inv_turns_range[2], length.out = 100),
+    PRON = seq(PRON_range[1], PRON_range[2], length.out = 100)
+)
+other_predictors <- c("AUX", "ADP", "VERB", "CLAUSE", "TTR", "PART")
+for(pred in other_predictors) {
+    plot_data[[pred]] <- mean(matched_pitt_test[[pred]], na.rm = TRUE)
+}
+
+# Add predicted probabilities
+plot_data$predicted_prob <- predict(final_matched_pitt, newdata = plot_data, 
+                                    type = "response", 
+                                    re.form = NA)
+
+# Create the plot
+ggplot(plot_data, aes(x = PRON, y = predicted_prob, color = inv_turns)) +
+    geom_line() +
+    scale_color_viridis_c(name = "Turns") +
+    labs(x = "Pronoun Usage", 
+         y = "Predicted Probability of Diagnosis") +
+    theme_minimal()
+
+# ---------- classification performance ---------
 metrics <- get_metrics(pitt_model, filtered_pitt_test)
 cat(paste(
     "pitt model on pitt test:",
@@ -471,6 +416,8 @@ final_matched_wls <- backward_selection(matched_wls_model)
 summary(final_wls_model)
 summary(final_matched_wls)
 
+texreg(list(final_matched_pitt, final_matched_wls), booktabs = TRUE)
+
 metrics <- get_metrics(final_matched_wls, filtered_pitt_test)
 cat(paste(
     "final wls model on orginal pitt test:",
@@ -513,3 +460,24 @@ nrow(wls[wls$dx == 1,])
 
 n_distinct(wls$pid[wls$dx == 0])
 n_distinct(wls$pid[wls$dx == 1])
+# ------------ INV utterance analysis ----------
+pitt_sim <- read.csv('pitt_sim.csv')
+wls_sim <- read.csv('wls_sim.csv')
+pitt_sim <- pitt_sim %>% 
+    filter(str_detect(utterance1, "anything else") & 
+               str_detect(utterance2, "anything else"))
+wls_sim <- wls_sim %>% 
+    filter(str_detect(utterance1, "anything else") & 
+               str_detect(utterance2, "anything else"))
+pitt_sep <- read.csv("pitt_inv_sep.csv")
+wls_sep <- read.csv("wls_inv_sep.csv")
+pitt_sep <- pitt_sep %>% 
+    filter(str_detect(text, "anything else"))
+wls_sep <- wls_sep %>% 
+    filter(str_detect(text, "anything else"))
+nrow(pitt_sep[pitt_sep$dx == 1,])
+nrow(pitt_sep[pitt_sep$dx == 0,])
+nrow(wls_sep[wls_sep$dx == 1,])
+nrow(wls_sep[wls_sep$dx == 0,])
+mean(pitt_sim$score)
+mean(wls_sim$score)
