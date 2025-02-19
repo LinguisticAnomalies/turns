@@ -44,12 +44,13 @@ def read_files(files_list):
 
 def load_inv_wls(config):
     matched_df = pd.read_csv("../data/matched_wls.csv")
+    matched_ids = matched_df['pid'].values.tolist()
     inv_path = os.path.join(config['DATA']['wls_output'], "INV/txt")
     inv_files = glob(f"{inv_path}/*.jsonl")
     inv_df = read_files(inv_files)
     inv_df['pid']  = '20000' + inv_df['pid'].astype(str)
     inv_df['pid'] = inv_df['pid'].astype(int) 
-    # inv_df = inv_df.loc[inv_df['pid'].isin(matched_ids)]
+    inv_df = inv_df.loc[inv_df['pid'].isin(matched_ids)]
     total_df = matched_df.merge(inv_df, on = "pid")
     return total_df
 
@@ -65,7 +66,7 @@ def load_inv_pitt(config):
         pd.DataFrame: the utterances from investigators in the matched Pitt corpus
     """
     matched_ids = pd.read_csv("../data/matched_pitt.csv")
-    matched_ids = matched_ids['pid'].values.tolist()
+    matched_ids = matched_ids['x'].values.tolist()
     inv_con_path = os.path.join(config['DATA']['pitt_output'], "control/INV/txt")
     inv_con_files = glob(f"{inv_con_path}/*.jsonl")
     inv_dem_path = os.path.join(config['DATA']['pitt_output'], "dementia/INV/txt")
@@ -119,7 +120,7 @@ def find_top_10_sentences(sentences):
     return top_10
 
 
-def utterance_analysis(df, utterance_column, model):
+def utterance_analysis(df, utterance_column):
     all_utterances = [sentence for utterance in df[utterance_column] for sentence in segment_sentences(utterance)]
     all_utterances = [re.sub(r'\s?\x15', '', item) for item in all_utterances]
     all_utterances = [item for item in all_utterances if item]
@@ -128,47 +129,15 @@ def utterance_analysis(df, utterance_column, model):
     top_10 = find_top_10_sentences(all_utterances)
     for sentence, count in top_10:
         print(f"'{sentence}' - {count} occurrences")
-    all_utterances = list(set(all_utterances))
-    print(f"Number of utterances after de-duplicate: {len(all_utterances)}")
-    utterance_pairs = list(combinations(all_utterances, 2))
-    df = pd.DataFrame(utterance_pairs, columns=['utterance1', 'utterance2'])
-    df['score'] = calculate_similarities(df, model, 1000)
-    print(df['score'].describe())
-    return df
 
 
-def calculate_similarities(df, model, batch_size=1000):
-    total_rows = len(df)
-    similarities = np.zeros(total_rows)
-    
-    for i in tqdm(range(0, total_rows, batch_size)):
-        batch = df.iloc[i:i+batch_size]
-        sentences1 = batch['utterance1'].tolist()
-        sentences2 = batch['utterance2'].tolist()
-        
-        embeddings1 = model.encode(sentences1, convert_to_tensor=True)
-        embeddings2 = model.encode(sentences2, convert_to_tensor=True)
-        
-        batch_similarities = model.similarity(embeddings1, embeddings2)
-        
-        # Extract the diagonal of the similarity matrix
-        batch_similarities_diagonal = np.diagonal(batch_similarities.cpu().numpy())
-        
-        similarities[i:i+len(batch_similarities_diagonal)] = batch_similarities_diagonal
-    
-    return similarities
-
-def sim_driver(df, utterance_column, model):
+def sim_driver(df, utterance_column):
     con_df = df.loc[df['dx'] == 0]
     dem_df = df.loc[df['dx'] == 1]
     print("============ Control ================")
-    con_res = utterance_analysis(con_df, utterance_column, model)
+    utterance_analysis(con_df, utterance_column)
     print("============ Dementia ===============")
-    dem_res = utterance_analysis(dem_df, utterance_column, model)
-    con_res['dx'] = 0
-    dem_res['dx'] = 1
-    res_df = pd.concat([con_res, dem_res])
-    return res_df
+    utterance_analysis(dem_df, utterance_column)
 
 
 if __name__ == "__main__":
@@ -186,15 +155,12 @@ if __name__ == "__main__":
         inv_pitt.to_csv("../data/pitt_inv.tsv", sep="\t", index=False)
         inv_wls.to_csv("../data/wls_inv.tsv", sep="\t", index=False)
     else:
-        model = SentenceTransformer("all-MiniLM-L6-v2")
         utterance_column = "result"
         nlp = spacy.load('en_core_web_trf')
         inv_pitt = pd.read_csv("../data/pitt_inv.tsv", sep="\t")
         inv_wls = pd.read_csv("../data/wls_inv.tsv", sep="\t")
         print("============ Pitt corups ============")
         # ngram_driver(inv_pitt, utterance_column, 3)
-        pitt_res = sim_driver(inv_pitt, utterance_column, model)
-        pitt_res.to_csv("../data/pitt_sim.csv", index=False)
+        sim_driver(inv_pitt, utterance_column,)
         print("============ WLS corups =============")
-        wls_res = sim_driver(inv_wls, utterance_column, model)
-        wls_res.to_csv("../data/wls_sim.csv", index=False)
+        sim_driver(inv_wls, utterance_column)

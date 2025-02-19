@@ -237,7 +237,106 @@ def merge_with_meta_pitt(meta_data_path):
     full_df = full_df.merge(mmse_df, on=['pid'])
     return full_df
 
-def merge_with_meta_wls(meta_data_path):
+def create_cfs_column(df, score_col, age_col, new_col_name):
+    df[score_col] = pd.to_numeric(df[score_col])
+    df[new_col_name] = 0
+    score_under_12 = df[score_col] < 12
+    score_12_to_13 = (df[score_col] >= 12) & (df[score_col] < 14)
+    score_14_to_15 = (df[score_col] >= 14) & (df[score_col] < 16)
+    
+    age_over_80 = df[age_col] >= 80
+    age_over_60 = df[age_col] >= 60
+
+    df.loc[score_under_12, new_col_name] = 1
+    df.loc[score_12_to_13 & ~age_over_80, new_col_name] = 1
+    df.loc[score_14_to_15 & ~age_over_60, new_col_name] = 1
+    return df
+
+
+def merge_with_meta_wls_2011(meta_data_path):
+    meta_df = pd.read_csv(meta_data_path)
+    meta_df = meta_df[['idtlkbnk', 'education', 'stroke\n2011', 'age 2011', 'sex',
+                       'mental illness 2011', 'category fluency, scored words named, 2011']]
+    meta_df.rename(
+        columns={'idtlkbnk': 'pid', 
+                 'category fluency, scored words named, 2011': 'cfs',
+                 'age 2011': 'age',
+                 'sex': 'gender',
+                 'education': 'educ'}, 
+        inplace=True)
+    meta_df['gender'] = np.where(
+        meta_df['gender'] == 1, 'male', 'female'
+    )
+    # no mental disease
+    meta_df = meta_df.loc[meta_df['mental illness 2011'] != 1]
+    # no stroke 
+    meta_df = meta_df.loc[meta_df['stroke\n2011'] != 1]
+    # cfs outliers
+    meta_df = meta_df.loc[meta_df['cfs'] > 0]
+    meta_df = meta_df[['pid', 'educ', 'age', 'cfs', 'gender']]
+    meta_df = create_cfs_column(meta_df, 'cfs', 'age', 'dx')
+    return meta_df
+
+def reassign_scores(df):
+    na_mask = df['score'].isna()
+    conditions = [
+        (na_mask) & (df['noise_label'] == 1),
+        (na_mask) & (df['noise_label'] == 0)
+    ]
+    values = [26, 32]
+    df['score'] = np.select(conditions, values, default=df['score'])
+    return df
+
+
+def create_cfs_column(df, score_col, age_col, new_col_name):
+    df[score_col] = pd.to_numeric(df[score_col])
+    df[new_col_name] = 0
+    score_under_12 = df[score_col] < 12
+    score_12_to_13 = (df[score_col] >= 12) & (df[score_col] < 14)
+    score_14_to_15 = (df[score_col] >= 14) & (df[score_col] < 16)
+
+    age_over_80 = df[age_col] >= 80
+    age_over_60 = df[age_col] >= 60
+
+    df.loc[score_under_12, new_col_name] = 1
+    df.loc[score_12_to_13 & ~age_over_80, new_col_name] = 1
+    df.loc[score_14_to_15 & ~age_over_60, new_col_name] = 1
+    return df
+
+
+def merge_with_meta_wls(meta_data_path_2011, meta_data_path_2020):
+    meta_2011 = pd.read_csv(meta_data_path_2011)
+    meta_df = pd.read_csv(meta_data_path_2020)
+    # 2011 inclusion/exclusion
+    meta_2011 = meta_2011[['idtlkbnk', 'education', 'stroke\n2011', 'age 2011',
+                       'mental illness 2011', 'category fluency, scored words named, 2011',
+                       'sex']]
+    meta_2011.rename(
+        columns={'idtlkbnk': 'pid', 
+                 'category fluency, scored words named, 2011': 'cfs',
+                 'age 2011': 'age',
+                 'sex': 'gender',
+                 'education': 'educ'}, 
+        inplace=True)
+    meta_2011 = meta_2011.loc[meta_2011['mental illness 2011'] != 1]
+    meta_2011 = meta_2011.loc[meta_2011['stroke\n2011'] != 1]
+    meta_2011 = meta_2011.loc[meta_2011['cfs'] > 0]
+    meta_2011 = meta_2011.loc[meta_2011['educ'] > 0]
+    meta_2011 = meta_2011[['pid', 'educ', 'age', 'cfs', 'gender']]
+    meta_2011 = create_cfs_column(meta_2011, 'cfs', 'age','noise_label')
+    # 2020 update score
+    meta_df.rename(
+        columns={'idtlkbnk': 'pid',
+                 'TICSm score': 'score'},
+        inplace=True)
+    total_df = meta_2011.merge(meta_df, on='pid')
+    total_df = reassign_scores(total_df)
+    total_df = total_df.loc[(total_df['score'] <= 27 )| (total_df['score'] > 31)]
+    total_df['dx'] = np.where(total_df['score'] <= 27, 1, 0)
+    total_df = total_df[['pid', 'age', 'educ', 'gender','dx']]
+    return total_df
+
+def merge_with_meta_wls_2020(meta_data_path):
     meta_df = pd.read_csv(meta_data_path)
     # TICSm score for dementia cutoff
     meta_df = meta_df.dropna(subset=['TICSm score'])
@@ -333,7 +432,9 @@ if __name__ == "__main__":
         if sample['component'] == "pitt":
             meta_df = merge_with_meta_pitt(config['META'][f"{sample['component']}_meta"])
         else:
-            meta_df = merge_with_meta_wls(config['META'][f"{sample['component']}_meta"])
+            meta_df = merge_with_meta_wls(
+                config['META'][f"{sample['component']}_meta_2011"],
+                config['META'][f"{sample['component']}_meta_2020"])
         # get turns data
         turn_file = os.path.join(meta_prefix, f"{sample['component']}{subset_suffix}_turns.csv")
         turn_df = load_or_process_data(sample)
